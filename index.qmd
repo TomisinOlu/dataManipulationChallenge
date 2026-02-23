@@ -273,17 +273,63 @@ What's wrong with the `lateStatement` assignment and how would you fix it?
 
 ::: {.callout-tip}
 ## Your Answer: Data Types and Date Handling
-*Replace this with your answer to Question 1.*
+- **What is the dtype?** `actualShipDate` is a pandas datetime type (typically `datetime64[ns]`).
+
+  You can confirm with:
+
+  ```python
+  shipments_df["actualShipDate"].dtype
+  shipments_df[["plannedShipDate", "actualShipDate"]].dtypes
+  ```
+
+- **Why matching types matters:**
+  - The comparison `actualShipDate > plannedShipDate` only makes business sense when both are true datetimes.
+  - The subtraction `actualShipDate - plannedShipDate` produces a timedelta series only when both columns are datetimes; that’s what allows `.dt.days`.
+  - If one column is a string (`object`) and the other is datetime, comparisons can error or silently behave incorrectly (lexicographic ordering rather than time ordering).
 :::
 
 ::: {.callout-tip}
 ## Your Answer: String vs Date Comparison
-*Replace this with your answer to Question 2.*
+If dates are stored as strings in a non-ISO format (like `"MM-DD-YYYY"`), Python compares them **alphabetically**, not chronologically.
+
+Example (string comparison is misleading):
+
+```python
+"12-01-2024" > "02-15-2025"   # True as strings, but the date is earlier
+```
+
+Correct approach (convert to datetime first):
+
+```python
+pd.to_datetime("12-01-2024", format="%m-%d-%Y") > pd.to_datetime("02-15-2025", format="%m-%d-%Y")
+```
+
+Best practice: parse dates as datetimes (or use ISO strings like `"2025-04-11"` if you must keep strings).
 :::
 
 ::: {.callout-tip}
 ## Your Answer: Debug This Code
-*Replace this with your answer to Question 3.*
+What’s wrong:
+
+- `shipments_df["is_late"]` **doesn’t exist yet** (it’s being created inside the same `.assign()`).
+- Even if it existed, it’s a **Series**, and `if <Series>` raises the “truth value of a Series is ambiguous” error.
+
+Fix it with a vectorized expression (and reference `df` inside the chain):
+
+```python
+shipments_with_lateness = (
+    shipments_df
+    .assign(
+        is_late=lambda df: df["actualShipDate"] > df["plannedShipDate"],
+        days_late=lambda df: (df["actualShipDate"] - df["plannedShipDate"]).dt.days,
+        lateStatement=lambda df: np.where(
+            df["is_late"],
+            "Darn shipment is late",
+            "Shipment is on time"
+        )
+    )
+)
+```
 :::
 
 ### 2. Subset: Querying Rows and Filtering Columns
@@ -329,12 +375,27 @@ print(late_shipments.head())
 
 ::: {.callout-tip}
 ## Your Answer: Query vs Boolean Indexing
-*Replace this with your answer to Question 1.*
+- **`.query('is_late == True')`** evaluates a string expression against column names. It’s concise and reads like SQL for multi-condition filters.
+- **Boolean indexing (`df[df["is_late"]]`)** is explicit Python, easier to debug step-by-step, and tends to be more flexible for complex logic.
+
+Readability:
+- `.query()` is often clearer for simple, “business rule” filters.
+- Boolean indexing is usually clearer once you start stacking complex logic or using string methods.
 :::
 
 ::: {.callout-tip}
 ## Your Answer: Additional Row Querying
-*Replace this with your answer to Question 2.*
+Example using a threshold variable with `.query()`:
+
+```python
+late_threshold = 5
+
+late_5_plus = (
+    shipments_with_lateness
+    .query("days_late >= @late_threshold")
+    .filter(["shipID", "partID", "plannedShipDate", "actualShipDate", "days_late"])
+)
+```
 :::
 
 ### 3. Drop: Removing Unwanted Data
@@ -373,12 +434,18 @@ print("Remaining columns:", clean_shipments.columns.tolist())
 
 ::: {.callout-tip}
 ## Your Answer: Drop vs Filter Strategies
-*Replace this with your answer to Question 1.*
+- **`.drop(columns=[...])`** is an “exclude” strategy: keep everything except what you name. Use it when there are only a few columns to remove.
+- **`.filter([...])`** is an “include” strategy: keep only what you name. Use it when you want a stable set of columns for reporting/analysis (prevents surprise columns from leaking in).
+
+In practice: dropping is convenient; filtering is safer for “final” analysis tables.
 :::
 
 ::: {.callout-tip}
 ## Your Answer: Handling Missing Data
-*Replace this with your answer to Question 2.*
+- `.dropna()` with no `subset` drops a row if **any column** is missing. In real datasets, that can throw away a lot of valid records.
+- `.dropna(subset=["plannedShipDate", "actualShipDate"])` only drops rows missing the fields required to compute lateness.
+
+Selective `subset` aligns data-cleaning with the business question (service level requires dates; it doesn’t require every optional column to be filled).
 :::
 
 ### 4. Sort: Arranging Data
@@ -417,12 +484,27 @@ print(sorted_by_lateness[['shipID', 'partID', 'days_late', 'is_late']].head(10))
 
 ::: {.callout-tip}
 ## Your Answer: Sorting Strategies
-*Replace this with your answer to Question 1.*
+- `ascending=False` sorts **largest → smallest**.
+- `ascending=True` sorts **smallest → largest**.
+
+Sort by multiple columns (late first, then most-late first):
+
+```python
+sorted_multi = clean_shipments.sort_values(
+    ["is_late", "days_late"],
+    ascending=[False, False]
+)
+```
 :::
 
 ::: {.callout-tip}
 ## Your Answer: Index Management
-*Replace this with your answer to Question 2.*
+Sorting reorders rows but **keeps the original index values**, which can look “scrambled” after sorting.
+
+`.reset_index(drop=True)`:
+- makes the table easier to read,
+- avoids confusion when referencing row positions (e.g., “top 10”),
+- reduces mistakes in downstream, position-based operations.
 :::
 
 ### 5. Aggregate: Summarizing Data
@@ -463,7 +545,11 @@ print(f"\nOn-time delivery rate: {on_time_rate:.1f}%")
 
 ::: {.callout-tip}
 ## Your Answer: Boolean Aggregation
-*Replace this with your answer to Question 1.*
+Booleans behave like 0/1 in pandas and numpy (`True == 1`, `False == 0`).
+
+So:
+- `is_late.sum()` counts how many shipments are late (number of `True` values),
+- `is_late.mean()` gives the late rate (late count ÷ total).
 :::
 
 ### 6. Merge: Combining Information
@@ -503,12 +589,35 @@ print(shipments_with_category['prodCategory'].value_counts())
 
 ::: {.callout-tip}
 ## Your Answer: Join Types and Data Loss
-*Replace this with your answer to Question 1.*
+`how="left"` keeps **all shipment rows**, even when a `partID` has missing product metadata. That prevents silent data loss and protects your metrics from being biased by missing reference data.
+
+To check for loss or duplication, compare row counts:
+
+```python
+len(clean_shipments), len(shipments_with_category)
+```
+
+To audit unmatched keys:
+
+```python
+shipments_with_category["prodCategory"].isna().mean()
+```
 :::
 
 ::: {.callout-tip}
 ## Your Answer: Key Column Matching
-*Replace this with your answer to Question 2.*
+If `product_line_df` has duplicate `partID` values, the merge can **multiply rows** (one shipment line matches multiple product rows). That inflates counts and distorts rates.
+
+Best practice is to enforce “many-to-one”:
+
+```python
+clean_shipments.merge(
+    product_line_df,
+    on="partID",
+    how="left",
+    validate="m:1"
+)
+```
 :::
 
 ### 7. Split-Apply-Combine: Group Analysis
@@ -549,12 +658,21 @@ print(service_by_category)
 
 ::: {.callout-tip}
 ## Your Answer: GroupBy Mechanics
-*Replace this with your answer to Question 1.*
+`.groupby("prodCategory")` splits the dataset into one bucket per category. After grouping, pandas holds a **GroupBy object** (a plan for doing calculations within each bucket).
+
+`.agg(...)` is required to turn each group into summary rows. Without an aggregation (or `.mean()`, `.sum()`, etc.), nothing is computed.
 :::
 
 ::: {.callout-tip}
 ## Your Answer: Multi-Level Grouping
-*Replace this with your answer to Question 2.*
+Grouping by `["shipID", "prodCategory"]` answers shipment-level questions:
+
+- “Which categories are in each shipment?”
+- “For a given shipment-category combination, was anything late (and how late at worst)?”
+
+That’s different from grouping by category alone, which answers: “Across the whole business, how late is each category?”
+
+Multi-level grouping is the foundation for identifying **multi-category shipments** without double-counting line items.
 :::
 
 ## Answering A Business Question
@@ -599,7 +717,15 @@ print(f"Percentage with multiple categories: {multi_category_shipments['shipID']
 
 ::: {.callout-tip}
 ## Your Answer: Business Question Analysis
-*Replace this with your answer to Question 1.*
+This analysis answers: **“How often do customers ship orders containing multiple product categories, and what does that imply operationally?”**
+
+- Grouping by `["shipID", "prodCategory"]` produces one row per shipment-category, which prevents line items from over-weighting the results.
+- Grouping by only `prodCategory` would summarize category performance but would not tell you whether shipments span multiple categories.
+
+Why management cares about the multi-category share:
+- **Cross-category shopping:** indicates bundling/cross-sell behavior and informs merchandising.
+- **Fulfillment complexity:** multi-category shipments may require more picks and touches; if they correlate with lateness, they’re an operations improvement target.
+- **Service level strategy:** compare on-time rates for single-category vs multi-category shipments to isolate where service levels degrade.
 :::
 
 ## Student Analysis Section: Mastering Data Manipulation {#student-analysis-section}
@@ -638,6 +764,47 @@ print(f"Percentage with multiple categories: {multi_category_shipments['shipID']
 - Support the insights from your discussion questions
 - Be appropriate for a business audience
 - Do not `echo` the code that creates the visualizations
+
+### Visualization: On-time delivery rate by product category
+
+```{python}
+#| label: viz-on-time-by-category
+#| echo: false
+#| message: false
+#| warning: false
+#| fig-width: 8
+#| fig-height: 4.5
+
+sns.set_theme(style="whitegrid")
+
+on_time_by_category = (
+    shipments_with_category
+    .dropna(subset=["prodCategory"])
+    .groupby("prodCategory", as_index=False)
+    .agg(
+        on_time_pct=("is_late", lambda s: (1 - s.mean()) * 100),
+        shipment_lines=("shipID", "count"),
+        unique_shipments=("shipID", "nunique"),
+    )
+    .sort_values("on_time_pct", ascending=False)
+)
+
+ax = sns.barplot(
+    data=on_time_by_category,
+    x="prodCategory",
+    y="on_time_pct",
+    color="#2A6F97",
+)
+
+ax.set_title("On-time delivery rate by product category", pad=12)
+ax.set_xlabel("Product category")
+ax.set_ylabel("On-time delivery (%)")
+ax.set_ylim(0, 100)
+ax.bar_label(ax.containers[0], fmt="%.1f%%", padding=3, fontsize=9)
+
+plt.tight_layout()
+plt.show()
+```
 
 ## Grading Rubric 🎓 {#grading-rubric}
 
